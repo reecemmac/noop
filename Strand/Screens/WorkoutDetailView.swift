@@ -89,6 +89,13 @@ struct WorkoutDetailView: View {
             hrCurveCard
             zonesCard
             heartRateRecoveryCard
+            #if os(iOS)
+            if WorkoutSource.classify(row.source) == .manual,
+               let guided = GuidedRecoveryStore.load(workoutStart: row.startTs, sport: row.sport),
+               guided.workoutEnd == row.endTs {
+                GuidedRecoveryResults(record: guided)
+            }
+            #endif
             if let strain = row.strain {
                 effortCard(strain: strain)
             }

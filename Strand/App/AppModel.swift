@@ -21,6 +21,74 @@ enum DataSourceImportKind {
 /// in later milestones.
 @MainActor
 final class AppModel: ObservableObject {
+    @Published private(set) var guidedRecovery: GuidedRecoveryRecord?
+    private var recoveryLeadIn: [TimedHeartRateRecovery.Sample] = []
+    private var recoveryLeadInDeviceId: String?
+
+    /// Owns the recovery feed separately from the workout screen's reference-counted lease.
+    func beginGuidedRecovery(posture: GuidedRecoveryRecord.Posture) {
+        guard let workout = activeWorkout, !workout.isPaused, guidedRecovery == nil else { return }
+        let start = Int(workout.start.timeIntervalSince1970)
+        endWorkout()
+        guard let row = lastWorkout, row.startTs == start else { return }
+        let record = GuidedRecoveryRecord(
+            workoutStart: row.startTs, workoutEnd: row.endTs, sport: row.sport,
+            deviceId: registry.activeDeviceId, posture: posture,
+            samples: recoveryLeadInDeviceId == registry.activeDeviceId
+                ? recoveryLeadIn.filter { $0.ts >= row.endTs - 4 && $0.ts <= row.endTs } : [],
+            observedThrough: row.endTs)
+        guidedRecovery = record
+        GuidedRecoveryStore.save(record)
+        startRealtimeHR()
+    }
+
+    func tickGuidedRecovery(now: Date = Date()) {
+        guard var record = guidedRecovery, record.status == .measuring else { return }
+        record.advance(to: Int(now.timeIntervalSince1970), activeDeviceId: registry.activeDeviceId,
+                       workoutActive: activeWorkout != nil)
+        guard record != guidedRecovery else { return }
+        guidedRecovery = record
+        if record.status != .measuring {
+            GuidedRecoveryStore.save(record)
+            stopRealtimeHR()
+        }
+    }
+
+    func finishGuidedRecovery() {
+        guard var record = guidedRecovery, record.status == .measuring else { return }
+        record.status = .interrupted
+        guidedRecovery = record
+        GuidedRecoveryStore.save(record)
+        stopRealtimeHR()
+    }
+
+    func closeGuidedRecovery() {
+        finishGuidedRecovery()
+        guidedRecovery = nil
+    }
+
+    /// Only a newly published sensor HR enters this buffer; timer ticks and R-R republishes cannot
+    /// manufacture readings from the held/smoothed display HR.
+    private func captureRecoveryHR(_ bpm: Int?, now: Date = Date()) {
+        if bpm == nil || recoveryLeadInDeviceId != registry.activeDeviceId {
+            recoveryLeadIn.removeAll()
+            recoveryLeadInDeviceId = registry.activeDeviceId
+        }
+        guard let bpm, (30...220).contains(bpm) else { return }
+        let timestamp = Int(now.timeIntervalSince1970)
+        recoveryLeadIn.removeAll { $0.ts < timestamp - 4 }
+        if !recoveryLeadIn.contains(where: { $0.ts == timestamp }) {
+            recoveryLeadIn.append(.init(ts: timestamp, bpm: bpm))
+        }
+        guard var record = guidedRecovery, record.status == .measuring else { return }
+        guard record.deviceId == registry.activeDeviceId else {
+            finishGuidedRecovery(); return
+        }
+        record.append(bpm: bpm, timestamp: timestamp)
+        guard record != guidedRecovery else { return }
+        guidedRecovery = record
+        GuidedRecoveryStore.save(record)
+    }
     /// The live instance, so an AppIntent (Shortcuts) can reach the bonded strap rather than spinning
     /// up a dead second AppModel (which would start a duplicate BLE engine and never buzz). Set in
     /// init(); `weak` so an intent fired while NOOP is closed sees nil and asks the user to open it. (#42)
@@ -287,6 +355,7 @@ final class AppModel: ObservableObject {
         // heart rate (a disconnect, the strap off the wrist) found the old values still there and kept the median.
         live.$heartRate.sink { [weak self] hr in
             guard let self else { return }
+            self.captureRecoveryHR(hr)
             self.ingestHR(heartRate: hr, rr: self.live.rr)
         }.store(in: &hrCancellables)
         live.$rr.sink { [weak self] rr in

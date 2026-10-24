@@ -38,11 +38,24 @@ struct LiveWorkoutView: View {
     /// control must not end the workout instantly with no way back.
     @State private var showEndConfirm = false
     @State private var showDeleteConfirm = false
+    @State private var showRecoveryProtocol = false
 
     private var zoneSet: HRZoneSet { model.profile.hrZoneSet }
     private var zone: Int { model.bpm.map { zoneSet.zoneNumber(forBPM: Double($0)) } ?? 0 }
 
     var body: some View {
+        #if os(iOS)
+        if model.guidedRecovery != nil {
+            GuidedRecoveryView(onClose: onClose)
+        } else {
+            workoutBody
+        }
+        #else
+        workoutBody
+        #endif
+    }
+
+    private var workoutBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 let cards: [AnyView] = [
@@ -87,7 +100,9 @@ struct LiveWorkoutView: View {
                 .ignoresSafeArea()
         }
         // If the workout ended elsewhere (process restart cleared it), close the screen.
-        .onChangeCompat(of: model.activeWorkout == nil) { gone in if gone { onClose() } }
+        .onChangeCompat(of: model.activeWorkout == nil) { gone in
+            if gone && model.guidedRecovery == nil { onClose() }
+        }
         // Arm the realtime HR stream while the in-exercise screen is up (#681). On a WHOOP 5/MG live HR
         // only flows while the puffin realtime stream is armed; previously only the Live tab armed it, so
         // starting a manual workout straight from Workouts (Live never opened) left `model.bpm == nil` —
@@ -111,12 +126,26 @@ struct LiveWorkoutView: View {
         .alert("End this workout?",
                isPresented: $showEndConfirm) {
             Button("Cancel", role: .cancel) { }
+            #if os(iOS)
+            if model.activeWorkout?.isPaused == false {
+                Button("End and measure recovery") { showRecoveryProtocol = true }
+            }
+            #endif
             Button("End", role: .destructive) {
                 model.endWorkout()
                 onClose()
             }
         } message: {
             Text("This stops recording and saves what's captured so far. It can't be resumed.")
+        }
+        .confirmationDialog("Recovery posture", isPresented: $showRecoveryProtocol,
+                            titleVisibility: .visible) {
+            Button("Sitting") { model.beginGuidedRecovery(posture: .sitting) }
+            Button("Standing") { model.beginGuidedRecovery(posture: .standing) }
+            Button("Walking") { model.beginGuidedRecovery(posture: .walking) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Stop exercise when you select a posture. Keep that posture for two minutes with this screen open.")
         }
         .confirmationDialog("Delete", isPresented: $showDeleteConfirm,
                             titleVisibility: .visible) {

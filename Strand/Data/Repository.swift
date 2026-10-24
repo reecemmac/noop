@@ -3015,6 +3015,8 @@ final class Repository: ObservableObject {
                 if oldRoute != nil {
                     RouteStore.remove(startTs: old.startTs, sport: old.sport)
                 }
+                GuidedRecoveryStore.move(workoutStart: old.startTs, sport: old.sport,
+                                          toStart: row.startTs, toSport: row.sport)
             } catch {
                 // Replacement and both route keys remain available; retrying the edit is safe.
             }
@@ -3076,10 +3078,14 @@ final class Repository: ObservableObject {
         // removes the row the wearer tapped and its copies in the strap namespaces, nothing else. An
         // overlapping-but-differently-keyed session is NOT touched; collapsing those is the dedup's job
         // at display time, not a delete's.
+        var deletedSuccessfully = true
         for id in Self.deletableWorkoutNamespaces(rawIds: rawPhysiologyReadIds(store: store)) {
-            _ = try? await store.deleteWorkouts(deviceId: id, sport: row.sport,
-                                                from: row.startTs, to: row.startTs)
+            do {
+                _ = try await store.deleteWorkouts(deviceId: id, sport: row.sport,
+                                                  from: row.startTs, to: row.startTs)
+            } catch { deletedSuccessfully = false }
         }
+        if deletedSuccessfully { GuidedRecoveryStore.remove(workoutStart: row.startTs, sport: row.sport) }
     }
 
     /// #64: merge two-or-more overlapping / adjacent MANUAL or DETECTED sessions into ONE manual session
