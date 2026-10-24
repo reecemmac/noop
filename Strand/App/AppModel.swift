@@ -25,6 +25,9 @@ final class AppModel: ObservableObject {
     private var recoveryLeadIn: [TimedHeartRateRecovery.Sample] = []
     private var recoveryLeadInDeviceId: String?
 
+    /// The registry is installed asynchronously after the store opens.
+    private var recoveryDeviceId: String { deviceRegistry?.activeDeviceId ?? deviceId }
+
     /// Owns the recovery feed separately from the workout screen's reference-counted lease.
     func beginGuidedRecovery(posture: GuidedRecoveryRecord.Posture) {
         guard let workout = activeWorkout, !workout.isPaused, guidedRecovery == nil else { return }
@@ -33,8 +36,8 @@ final class AppModel: ObservableObject {
         guard let row = lastWorkout, row.startTs == start else { return }
         let record = GuidedRecoveryRecord(
             workoutStart: row.startTs, workoutEnd: row.endTs, sport: row.sport,
-            deviceId: registry.activeDeviceId, posture: posture,
-            samples: recoveryLeadInDeviceId == registry.activeDeviceId
+            deviceId: recoveryDeviceId, posture: posture,
+            samples: recoveryLeadInDeviceId == recoveryDeviceId
                 ? recoveryLeadIn.filter { $0.ts >= row.endTs - 4 && $0.ts <= row.endTs } : [],
             observedThrough: row.endTs)
         guidedRecovery = record
@@ -44,7 +47,7 @@ final class AppModel: ObservableObject {
 
     func tickGuidedRecovery(now: Date = Date()) {
         guard var record = guidedRecovery, record.status == .measuring else { return }
-        record.advance(to: Int(now.timeIntervalSince1970), activeDeviceId: registry.activeDeviceId,
+        record.advance(to: Int(now.timeIntervalSince1970), activeDeviceId: recoveryDeviceId,
                        workoutActive: activeWorkout != nil)
         guard record != guidedRecovery else { return }
         guidedRecovery = record
@@ -70,9 +73,9 @@ final class AppModel: ObservableObject {
     /// Only a newly published sensor HR enters this buffer; timer ticks and R-R republishes cannot
     /// manufacture readings from the held/smoothed display HR.
     private func captureRecoveryHR(_ bpm: Int?, now: Date = Date()) {
-        if bpm == nil || recoveryLeadInDeviceId != registry.activeDeviceId {
+        if bpm == nil || recoveryLeadInDeviceId != recoveryDeviceId {
             recoveryLeadIn.removeAll()
-            recoveryLeadInDeviceId = registry.activeDeviceId
+            recoveryLeadInDeviceId = recoveryDeviceId
         }
         guard let bpm, (30...220).contains(bpm) else { return }
         let timestamp = Int(now.timeIntervalSince1970)
@@ -81,7 +84,7 @@ final class AppModel: ObservableObject {
             recoveryLeadIn.append(.init(ts: timestamp, bpm: bpm))
         }
         guard var record = guidedRecovery, record.status == .measuring else { return }
-        guard record.deviceId == registry.activeDeviceId else {
+        guard record.deviceId == recoveryDeviceId else {
             finishGuidedRecovery(); return
         }
         record.append(bpm: bpm, timestamp: timestamp)
